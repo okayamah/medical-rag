@@ -3,6 +3,7 @@
 ## 概要
 
 ローカル環境で動作する軽量な医療文献検索・回答生成システムです。
+<img width="1920" height="1414" alt="image" src="https://github.com/user-attachments/assets/5fc32e6a-b8d1-4de9-a2e3-bc4b30b5dc8d" />
 
 **主な特徴:**
 - **技術スタック**: ChromaDB + Ollama (Llama-3.1-8B) + Streamlit
