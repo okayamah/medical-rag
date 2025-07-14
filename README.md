@@ -61,19 +61,46 @@ ollama show llama3.1:8b-instruct-q4_0
 
 ## 実行方法
 
-### 1. Ollamaサーバーの起動
+### 1. PubMedデータの取得
+```bash
+# 仮想環境の有効化
+source venv/bin/activate
+
+# PubMed E-utilities APIを使用した医学文献データ収集
+python -m src.data_collector
+```
+
+### 2. テキスト前処理
+```bash
+# 仮想環境の有効化
+source venv/bin/activate
+
+# テキスト前処理・チャンク分割
+python -m src.text_processor
+```
+
+### 3. ベクトル化・データ登録
+```bash
+# 仮想環境の有効化
+source venv/bin/activate
+
+# ChromaDBベクトルストア登録
+python -m src.vector_store
+```
+
+### 4. Ollamaサーバーの起動
 ```bash
 # Ollamaサーバーを起動
 ollama serve
 ```
 
-### 2. Streamlitアプリの起動
+### 5. Streamlitアプリの起動
 ```bash
 # 仮想環境をアクティベート後
 streamlit run src/app.py
 ```
 
-### 3. 動作確認
+### 6. 動作確認
 - ブラウザで http://localhost:8501 にアクセス
 - アプリケーションが正常に表示されることを確認
 

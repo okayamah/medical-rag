@@ -7,8 +7,9 @@ import streamlit as st
 import time
 import json
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict, List, Optional
 import logging
+import requests
 
 import sys
 from pathlib import Path
@@ -43,6 +44,10 @@ if 'selected_query' not in st.session_state:
     st.session_state.selected_query = ""
 if 'query_input' not in st.session_state:
     st.session_state.query_input = ""
+if 'rag_response' not in st.session_state:
+    st.session_state.rag_response = None
+if 'llm_response' not in st.session_state:
+    st.session_state.llm_response = None
 
 def initialize_rag_system():
     """RAGシステムの初期化"""
@@ -132,29 +137,35 @@ def display_query_examples():
             st.session_state.selected_query = example
             st.rerun()
 
-def format_response_display(response: RAGResponse):
+def format_response_display(response: RAGResponse, response_type: str = "RAG"):
     """レスポンスの表示フォーマット"""
     
     # 基本情報
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        st.metric("検索時間", f"{response.search_time_ms:.0f}ms")
+        st.metric("検索時間", f"{response.search_time_ms:.0f}ms" if hasattr(response, 'search_time_ms') else "N/A")
     with col2:
-        st.metric("生成時間", f"{response.generation_time_ms:.0f}ms")
+        st.metric("生成時間", f"{response.generation_time_ms:.0f}ms" if hasattr(response, 'generation_time_ms') else "N/A")
     with col3:
-        st.metric("参考文献数", len(response.source_documents))
+        if response_type == "RAG" and hasattr(response, 'source_documents'):
+            st.metric("参考文献数", len(response.source_documents))
+        else:
+            st.metric("参考文献数", "N/A")
     
     # 英訳クエリ表示
-    if 'english_query' in response.metadata:
+    if hasattr(response, 'metadata') and response.metadata and 'english_query' in response.metadata:
         st.info(f"🔄 **検索に使用された英訳**: {response.metadata['english_query']}")
     
     # 回答表示
     st.markdown("### 💬 回答")
-    st.markdown(response.answer)
+    if hasattr(response, 'answer'):
+        st.markdown(response.answer)
+    else:
+        st.markdown(response)
     
-    # 参考文献表示
-    if response.source_documents:
+    # 参考文献表示（RAGのみ）
+    if response_type == "RAG" and hasattr(response, 'source_documents') and response.source_documents:
         st.markdown("### 📚 参考文献")
         
         for i, doc in enumerate(response.source_documents, 1):
@@ -207,7 +218,7 @@ def display_query_history():
                 st.session_state.selected_query = query
                 st.rerun()
 
-def save_query_to_history(query: str, response: RAGResponse):
+def save_query_to_history(query: str, response=None):
     """クエリ履歴への保存"""
     timestamp = datetime.now()
     st.session_state.query_history.append((query, timestamp))
@@ -225,6 +236,189 @@ def display_medical_disclaimer():
         "医学的な診断や治療の助言を行うものではありません。\n\n"
         "医療に関する判断は必ず医療従事者にご相談ください。"
     )
+
+class LLMResponse:
+    """直接LLM回答のデータクラス"""
+    def __init__(self, query: str, answer: str, generation_time_ms: float):
+        self.query = query
+        self.answer = answer
+        self.generation_time_ms = generation_time_ms
+        self.search_time_ms = 0.0  # LLMは検索しないため
+        self.source_documents = []  # LLMは参考文献なし
+        self.metadata = {}
+
+def get_llm_response(query: str) -> LLMResponse:
+    """直接LLM回答を取得"""
+    start_time = datetime.now()
+    
+    try:
+        # 医療専用プロンプト
+        medical_prompt = f"""あなたは医療知識に特化したAIアシスタントです。
+
+【重要な制約】
+1. 医学的診断や治療の助言は行わず、一般的な医療情報の提供に留めてください
+2. 不確実な情報については明確に「一般的な情報です」と述べてください
+3. 回答の最後に医療従事者への相談を推奨する文言を含めてください
+
+【回答形式】
+- 簡潔で分かりやすい日本語で回答
+- 一般的な医療知識を基にした情報提供
+- 最新の研究結果や文献情報は不明であることを明示
+
+質問: {query}
+
+回答:"""
+        
+        # Ollama APIへのリクエスト
+        response = requests.post(
+            f"{settings.OLLAMA_BASE_URL}/api/generate",
+            json={
+                "model": settings.OLLAMA_MODEL,
+                "prompt": medical_prompt,
+                "stream": False,
+                "options": {
+                    "temperature": 0.3,  # 少し高めの初期値で自然な回答
+                    "top_p": 0.9,
+                    "num_predict": 1000,  # 最大トークン数
+                }
+            },
+            timeout=settings.GENERATION_TIMEOUT
+        )
+        
+        response.raise_for_status()
+        result = response.json()
+        
+        answer = result.get('response', '回答の生成に失敗しました。')
+        generation_time = (datetime.now() - start_time).total_seconds() * 1000
+        
+        logger.info(f"LLM direct response generated ({generation_time:.2f}ms)")
+        return LLMResponse(query, answer, generation_time)
+        
+    except requests.exceptions.Timeout:
+        logger.error("LLM response generation timed out")
+        return LLMResponse(query, "回答生成がタイムアウトしました。より簡潔な質問で再試行してください。", 0.0)
+    except requests.exceptions.ConnectionError:
+        logger.error("Failed to connect to Ollama server for LLM response")
+        return LLMResponse(query, "Ollamaサーバーに接続できません。サーバーが起動しているか確認してください。", 0.0)
+    except Exception as e:
+        logger.error(f"LLM response generation failed: {e}")
+        return LLMResponse(query, f"回答生成中にエラーが発生しました: {str(e)}", 0.0)
+
+def display_comparison_view(user_query: str, top_k: int, similarity_threshold: float):
+    """比較表示ビュー"""
+    st.markdown("### 🔍 クエリ実行")
+    
+    # テキスト入力の有無でボタンの活性化を制御
+    has_query = bool(user_query.strip())
+    
+    # ボタンレイアウト
+    col1, col2, col3 = st.columns([1, 1, 2])
+    
+    with col1:
+        rag_button = st.button("🔍 RAG回答", type="primary", disabled=not has_query)
+    
+    with col2:
+        llm_button = st.button("🤖 LLM回答", type="secondary", disabled=not has_query)
+    
+    with col3:
+        both_button = st.button("🔄 両方同時実行", type="secondary", disabled=not has_query)
+    
+    # クエリ実行
+    if has_query:
+        if rag_button or both_button:
+            execute_rag_query(user_query, top_k, similarity_threshold)
+        
+        if llm_button or both_button:
+            execute_llm_query(user_query)
+    
+    # 結果表示
+    if st.session_state.rag_response or st.session_state.llm_response:
+        st.markdown("---")
+        st.markdown(f"### 📋 質問: {user_query}")
+        
+        # タブ表示
+        tab1, tab2, tab3 = st.tabs(["🔍 RAG回答", "🤖 LLM回答", "🔄 比較"])
+        
+        with tab1:
+            if st.session_state.rag_response:
+                format_response_display(st.session_state.rag_response, "RAG")
+            else:
+                st.info("RAG回答を実行してください")
+        
+        with tab2:
+            if st.session_state.llm_response:
+                format_response_display(st.session_state.llm_response, "LLM")
+            else:
+                st.info("LLM回答を実行してください")
+        
+        with tab3:
+            if st.session_state.rag_response and st.session_state.llm_response:
+                display_comparison_results()
+            else:
+                st.info("比較には両方の回答が必要です")
+
+def execute_rag_query(user_query: str, top_k: int, similarity_threshold: float):
+    """RAGクエリ実行"""
+    with st.spinner("🔍 RAG回答を生成中..."):
+        try:
+            response = st.session_state.rag_system.query(
+                user_query=user_query.strip(),
+                top_k=top_k,
+                similarity_threshold=similarity_threshold
+            )
+            st.session_state.rag_response = response
+            st.success(f"✅ RAG回答が完了しました ({response.generation_time_ms:.0f}ms)")
+        except Exception as e:
+            st.error(f"❌ RAGエラー: {str(e)}")
+            logger.error(f"RAG query execution failed: {e}")
+
+def execute_llm_query(user_query: str):
+    """直接LLMクエリ実行"""
+    with st.spinner("🤖 LLM回答を生成中..."):
+        try:
+            response = get_llm_response(user_query)
+            st.session_state.llm_response = response
+            # 成功メッセージに生成時間を表示
+            st.success(f"✅ LLM回答が完了しました ({response.generation_time_ms:.0f}ms)")
+        except Exception as e:
+            st.error(f"❌ LLMエラー: {str(e)}")
+            logger.error(f"LLM query execution failed: {e}")
+
+def display_comparison_results():
+    """比較結果表示"""
+    st.markdown("### 🔄 比較結果")
+    
+    # パフォーマンス比較
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("#### 🔍 RAG回答")
+        if hasattr(st.session_state.rag_response, 'generation_time_ms'):
+            st.metric("生成時間", f"{st.session_state.rag_response.generation_time_ms:.0f}ms")
+        if hasattr(st.session_state.rag_response, 'source_documents'):
+            st.metric("参考文献数", len(st.session_state.rag_response.source_documents))
+    
+        # 回答表示
+        st.markdown("### 💬 回答")
+        if hasattr(st.session_state.rag_response, 'answer'):
+            st.markdown(st.session_state.rag_response.answer)
+        else:
+            st.markdown(st.session_state.rag_response)
+    
+    with col2:
+        st.markdown("#### 🤖 LLM回答")
+        if hasattr(st.session_state.llm_response, 'generation_time_ms'):
+            st.metric("生成時間", f"{st.session_state.llm_response.generation_time_ms:.0f}ms")
+        else:
+            st.metric("生成時間", "N/A")
+        st.metric("参考文献数", "0")
+    
+        # 回答表示
+        st.markdown("### 💬 回答")
+        if hasattr(st.session_state.llm_response, 'answer'):
+            st.markdown(st.session_state.llm_response.answer)
+        else:
+            st.markdown(st.session_state.llm_response)
 
 def main():
     """メインアプリケーション"""
@@ -272,57 +466,24 @@ def main():
         placeholder="例：COVID-19の治療法について教えてください",
     )
     
-    # 検索実行
-    col1, col2 = st.columns([1, 4])
+    # システムチェック
+    if not st.session_state.rag_system:
+        st.error("RAGシステムが初期化されていません。")
+        return
     
-    with col1:
-        search_button = st.button("🔍 検索・回答生成", type="primary")
+    # 比較モードで表示（常に表示）
+    display_comparison_view(user_query, top_k, similarity_threshold)
     
-    with col2:
-        if st.button("🗑️ 履歴をクリア"):
-            st.session_state.query_history = []
-            st.success("履歴をクリアしました")
+    # 履歴に保存
+    if st.session_state.rag_response or st.session_state.llm_response:
+        save_query_to_history(user_query)
     
-    # クエリ実行
-    if search_button and user_query.strip():
-        
-        if not st.session_state.rag_system:
-            st.error("RAGシステムが初期化されていません。")
-            return
-        
-        with st.spinner("文献を検索・分析中..."):
-            start_time = time.time()
-            
-            try:
-                # RAGクエリ実行
-                response = st.session_state.rag_system.query(
-                    user_query=user_query.strip(),
-                    top_k=top_k,
-                    similarity_threshold=similarity_threshold
-                )
-                
-                execution_time = time.time() - start_time
-                
-                # 結果表示
-                st.markdown("---")
-                st.markdown(f"### 📋 質問: {user_query}")
-                
-                # パフォーマンス情報
-                st.caption(f"⏱️ 総実行時間: {execution_time:.2f}秒")
-                
-                # レスポンス表示
-                format_response_display(response)
-                
-                # 履歴に保存
-                save_query_to_history(user_query, response)
-                
-            except Exception as e:
-                st.error(f"❌ エラーが発生しました: {str(e)}")
-                logger.error(f"Query execution failed: {e}")
-    
-    elif search_button:
-        logger.info(f"user_query={user_query}")
-        st.warning("質問を入力してください。")
+    # 履歴クリア
+    if st.button("🗑️ 履歴をクリア"):
+        st.session_state.query_history = []
+        st.session_state.rag_response = None
+        st.session_state.llm_response = None
+        st.success("履歴をクリアしました")
     
     # 免責事項
     display_medical_disclaimer()
