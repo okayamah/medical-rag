@@ -97,7 +97,7 @@ ollama serve
 ### 5. Streamlitアプリの起動
 ```bash
 # 仮想環境をアクティベート後
-streamlit run src/app.py
+streamlit run src/app_rag.py
 ```
 
 ### 6. 動作確認
