@@ -269,26 +269,22 @@ def get_llm_response(query: str) -> LLMResponse:
 
 回答:"""
         
-        # Ollama APIへのリクエスト
-        response = requests.post(
-            f"{settings.OLLAMA_BASE_URL}/api/generate",
-            json={
-                "model": settings.OLLAMA_MODEL,
-                "prompt": medical_prompt,
-                "stream": False,
-                "options": {
-                    "temperature": 0.3,  # 少し高めの初期値で自然な回答
-                    "top_p": 0.9,
-                    "num_predict": 1000,  # 最大トークン数
-                }
-            },
-            timeout=settings.GENERATION_TIMEOUT
+        # Ollama / Langfuse セットアップ
+        from ollama import Client
+        from langfuse.decorators import langfuse_context, observe
+        langfuse_context.configure(
+        secret_key=settings.LANGFUSE_SECRET_KEY,
+        public_key=settings.LANGFUSE_PUBLIC_KEY,
+        host=settings.LANGFUSE_HOST
         )
-        
-        response.raise_for_status()
-        result = response.json()
-        
-        answer = result.get('response', '回答の生成に失敗しました。')
+        # Ollama APIへのリクエスト
+        client = Client(host=settings.OLLAMA_BASE_URL)
+        @observe(as_type="generation")
+        def generate(prompt, model_id=settings.OLLAMA_MODEL, mode=None, system="あなたは優秀な日本人アシスタントです。特に指示が無い場合は、常に日本語で回答してください。"):
+            response = client.generate(model=model_id, prompt=prompt, format=mode, system=system)
+            return response
+        response = generate(prompt=medical_prompt)
+        answer = response.get('response', '回答の生成に失敗しました。')
         generation_time = (datetime.now() - start_time).total_seconds() * 1000
         
         logger.info(f"LLM direct response generated ({generation_time:.2f}ms)")

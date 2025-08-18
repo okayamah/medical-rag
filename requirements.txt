@@ -13,7 +13,7 @@ sentence-transformers>=2.2.2
 ollama>=0.1.7
 
 # Monitoring & Analytics
-langfuse>=2.9.0
+langfuse<3.0.0
 
 # Medical Data Collection
 biopython>=1.83

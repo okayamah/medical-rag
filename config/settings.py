@@ -29,9 +29,9 @@ class Settings(BaseSettings):
     PUBMED_MAX_RESULTS: int = 500
     
     # # Langfuse Monitoring
-    # LANGFUSE_SECRET_KEY: Optional[str] = None
-    # LANGFUSE_PUBLIC_KEY: Optional[str] = None
-    # LANGFUSE_HOST: str = "https://cloud.langfuse.com"
+    LANGFUSE_SECRET_KEY: str = ""
+    LANGFUSE_PUBLIC_KEY: str = ""
+    LANGFUSE_HOST: str = "http://localhost:3000"
     
     # Performance Settings
     SEARCH_TOP_K: int = 5
@@ -41,3 +41,6 @@ class Settings(BaseSettings):
 
 # Global settings instance
 settings = Settings()
+os.environ["LANGFUSE_PUBLIC_KEY"] = settings.LANGFUSE_PUBLIC_KEY
+os.environ["LANGFUSE_SECRET_KEY"] = settings.LANGFUSE_SECRET_KEY
+os.environ["LANGFUSE_HOST"] = settings.LANGFUSE_HOST
